@@ -1,8 +1,29 @@
+# Секретные файлы
+.env
+*.env
 
-echo ".env" >> .gitignore
-echo "bot.db" >> .gitignore
-echo "*.db" >> .gitignore
-echo "__pycache__/" >> .gitignore
-echo "*.pyc" >> .gitignore
+# Базы данных
+*.db
+*.sqlite
+*.sqlite3
 
-cat .gitignore
+# Питон
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Виртуальные окружения
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Логи
+*.log
+*.tmp
