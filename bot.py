@@ -238,6 +238,8 @@ def init_db():
         balance INTEGER DEFAULT 0,
         total_earned INTEGER DEFAULT 0,
         tasks_completed INTEGER DEFAULT 0
+        successful_refs INTEGER DEFAULT 0,      
+        is_ambassador BOOLEAN DEFAULT FALSE    
     )
     ''')
     
@@ -1575,6 +1577,8 @@ def update_screenshot_status(user_id, status, comment=None, context: CallbackCon
 
     if status == 'approved':
         earned_amount = 200
+        
+        # 1. Начисляем деньги пользователю за выполнение задания
         cursor.execute('''
         UPDATE user_progress 
         SET screenshot_status = ?, admin_review_comment = ?, current_step = 'completed',
@@ -1582,26 +1586,103 @@ def update_screenshot_status(user_id, status, comment=None, context: CallbackCon
             completed_at = CURRENT_TIMESTAMP
         WHERE user_id = ?
         ''', (status, comment, earned_amount, earned_amount, user_id))
-        # Добавляем в историю выполненных заданий
+        
+        # 2. Добавляем в историю выполненных заданий
         if photo_id:
             add_completed_task(user_id, photo_id)
-        # Реферальные бонусы
-        cursor.execute("SELECT referrer_id FROM referrals WHERE referred_id = ? AND bonus_paid = FALSE", (user_id,))
+        
+        # 3. РЕФЕРАЛЬНЫЕ БОНУСЫ (ИСПРАВЛЕННАЯ ЛОГИКА)
+        # Ищем реферера ДЛЯ ЭТОГО пользователя
+        cursor.execute('''
+        SELECT referrer_id 
+        FROM referrals 
+        WHERE referred_id = ?
+        ''', (user_id,))
+        
         row = cursor.fetchone()
+        
         if row:
             referrer_id = row[0]
-            cursor.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (referrer_id,))
-            registered = cursor.fetchone()[0] or 0
-            if registered >= 5:
-                bonus = int(earned_amount * 0.10)
+            
+            # 4. ПРОВЕРЯЕМ, не выплачивали ли уже бонус за этого реферала
+            cursor.execute('''
+            SELECT bonus_paid 
+            FROM referrals 
+            WHERE referred_id = ? AND referrer_id = ?
+            ''', (user_id, referrer_id))
+            
+            bonus_check = cursor.fetchone()
+            
+            # Если бонус уже выплачен - пропускаем
+            if bonus_check and bonus_check[0]:
+                logger.info(f"Бонус за реферала {user_id} уже выплачен рефереру {referrer_id}")
             else:
-                bonus = 50
-            cursor.execute("UPDATE user_progress SET balance = balance + ?, total_earned = total_earned + ? WHERE user_id = ?", (bonus, bonus, referrer_id))
-            cursor.execute("UPDATE referrals SET bonus_paid = TRUE WHERE referred_id = ? AND referrer_id = ?", (user_id, referrer_id))
-            if context:
-                asyncio.create_task(send_notification(referrer_id, f"🎉 Вы получили {bonus}₽ за приглашённого друга!", context))
+                # 5. Получаем статистику реферера
+                cursor.execute('''
+                SELECT 
+                    COALESCE(successful_refs, 0), 
+                    COALESCE(is_ambassador, FALSE)
+                FROM user_progress 
+                WHERE user_id = ?
+                ''', (referrer_id,))
+                
+                ref_stats = cursor.fetchone()
+                
+                if ref_stats:
+                    successful_refs, is_ambassador = ref_stats
+                    
+                    # 6. Рассчитываем бонус по ВАШЕЙ ЛОГИКЕ:
+                    base_bonus = 50  # Всегда 50 руб
+                    
+                    # Проверяем, стал ли реферер амбассадором на ЭТОМ шаге
+                    # ВАЖНО: проверяем ДО увеличения счетчика!
+                    will_become_ambassador = (successful_refs + 1 >= 5) and not is_ambassador
+                    
+                    # Если реферер УЖЕ амбассадор или СТАНЕТ им после этой выплаты
+                    if is_ambassador or will_become_ambassador:
+                        ambassador_bonus = int(earned_amount * 0.10)  # 10% от 200 = 20 руб
+                        total_bonus = base_bonus + ambassador_bonus
+                    else:
+                        total_bonus = base_bonus  # Только 50 руб
+                    
+                    # 7. Начисляем бонус рефереру
+                    cursor.execute('''
+                    UPDATE user_progress 
+                    SET balance = balance + ?, 
+                        total_earned = total_earned + ?,
+                        successful_refs = successful_refs + 1
+                    WHERE user_id = ?
+                    ''', (total_bonus, total_bonus, referrer_id))
+                    
+                    # 8. Если реферер стал амбассадором на этом шаге - обновляем статус
+                    if will_become_ambassador:
+                        cursor.execute('''
+                        UPDATE user_progress 
+                        SET is_ambassador = TRUE 
+                        WHERE user_id = ?
+                        ''', (referrer_id,))
+                        logger.info(f"🎉 Пользователь {referrer_id} стал амбассадором!")
+                    
+                    # 9. КРИТИЧЕСКИ ВАЖНО: помечаем бонус как ВЫПЛАЧЕННЫЙ
+                    cursor.execute('''
+                    UPDATE referrals 
+                    SET bonus_paid = TRUE 
+                    WHERE referred_id = ? AND referrer_id = ?
+                    ''', (user_id, referrer_id))
+                    
+                    # 10. Отправляем уведомление рефереру
+                    if context:
+                        if is_ambassador:
+                            message = f"🎉 Ваш реферал выполнил задание!\nПолучено: {total_bonus}₽\n(50₽ базовый + {ambassador_bonus}₽ бонус амбассадора)"
+                        elif will_become_ambassador:
+                            message = f"🏆 ВЫ СТАЛИ АМБАССАДОРОМ!\nВаш реферал выполнил задание!\nПолучено: {total_bonus}₽\n(50₽ базовый + {ambassador_bonus}₽ бонус амбассадора)"
+                        else:
+                            message = f"✅ Ваш реферал выполнил задание!\nПолучено: {total_bonus}₽\nДо амбассадора осталось: {5 - (successful_refs + 1)} успешных рефералов"
+                        
+                        asyncio.create_task(send_notification(referrer_id, message, context))
+    
     else:
-        cursor.execute("UPDATE user_progress SET screenshot_status = ?, admin_review_comment = ? WHERE user_id = ?", (status, comment, user_id))
+        # Логика для отклонения скриншота
         cursor.execute('''
         UPDATE user_progress 
         SET screenshot_status = 'rejected', 
