@@ -179,69 +179,6 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
-    # Таблица для инструкций (множество инструкций)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS task_instructions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,  -- Название инструкции
-        content TEXT NOT NULL,       -- Текст инструкции
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # Добавляем столбец category_id в таблицу photos
-    try:
-        cursor.execute("SELECT category_id FROM photos LIMIT 1")
-    except sqlite3.OperationalError:
-        cursor.execute('ALTER TABLE photos ADD COLUMN category_id INTEGER DEFAULT 1')
-        cursor.execute('UPDATE photos SET category_id = 1 WHERE category_id IS NULL')
-        logger.info("Добавлен столбец category_id в photos")
-    
-    # Добавляем столбец instruction_id в таблицу task_categories
-    try:
-        cursor.execute("SELECT instruction_id FROM task_categories LIMIT 1")
-    except sqlite3.OperationalError:
-        cursor.execute('ALTER TABLE task_categories ADD COLUMN instruction_id INTEGER')
-        logger.info("Добавлен столбец instruction_id в task_categories")
-    
-    # Добавляем категорию по умолчанию
-    cursor.execute('''
-    INSERT OR IGNORE INTO task_categories (id, name, description) 
-    VALUES (1, 'По умолчанию', 'Категория по умолчанию')
-    ''')
-    
-    # Добавляем инструкцию по умолчанию
-    cursor.execute("INSERT OR IGNORE INTO task_instructions (id, name, content) VALUES (1, 'По умолчанию', ?)",
-                   ('📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела "Мои отзывы"',))
-    
-    # Устанавливаем инструкцию по умолчанию для категории по умолчанию
-    cursor.execute('UPDATE task_categories SET instruction_id = 1 WHERE id = 1')
-    
-    # Таблица для фото
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS photos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        photo_id TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # Таблица для инструкции (старая, для обратной совместимости)
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS instruction (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        text TEXT NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # ... остальной существующий код остается без изменений ...
-    
-    # Вставляем начальные данные, если их нет (старая инструкция для обратной совместимости)
-    cursor.execute('''
-    INSERT OR IGNORE INTO instruction (id, text) 
-    VALUES (1, '📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела "Мои отзывы"')
-    ''')
     
     # Добавляем столбец category_id в таблицу photos
     try:
@@ -863,13 +800,8 @@ def get_task_help_buttons_cached():
     return get_task_help_buttons()
 
 @cached(ttl_seconds=300)  # Кэшируем на 5 минут
-def get_all_categories():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name, description, instruction_id, created_at FROM task_categories ORDER BY id")
-    categories = cursor.fetchall()
-    conn.close()
-    return categories
+def get_all_categories_cached():
+    return get_all_categories()
 
 def get_info_content(button_id):
     conn = get_db_connection()
@@ -972,162 +904,6 @@ def get_random_photo():
     conn.close()
     return random.choice(photos) if photos else None
 
-def get_all_instructions():
-    """Получить все инструкции"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM task_instructions ORDER BY id")
-    instructions = cursor.fetchall()
-    conn.close()
-    return instructions
-
-def get_instruction_by_id(instruction_id):
-    """Получить инструкцию по ID"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM task_instructions WHERE id = ?", (instruction_id,))
-    instruction = cursor.fetchone()
-    conn.close()
-    return instruction
-
-def get_instruction_by_category(category_id):
-    """Получить инструкцию для категории"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT ti.content 
-        FROM task_categories tc
-        LEFT JOIN task_instructions ti ON tc.instruction_id = ti.id
-        WHERE tc.id = ?
-    ''', (category_id,))
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result and result[0]:
-        return result[0]
-    # Возвращаем инструкцию по умолчанию если не найдена
-    default_instruction = "📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела \"Мои отзывы\""
-    return default_instruction
-
-def get_category_instruction(category_id):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT c.instruction_id, ti.name as instruction_name
-        FROM task_categories c
-        LEFT JOIN task_instructions ti ON c.instruction_id = ti.id
-        WHERE c.id = ?
-    ''', (category_id,))
-    
-    result = cursor.fetchone()
-    conn.close()
-    
-    if result:
-        instruction_id, instruction_name = result
-        return instruction_id if instruction_id else 1  # По умолчанию ID=1
-    
-    return 1  # По умолчанию ID=1
-
-def update_category_instruction(category_id, instruction_id):
-    """Обновить инструкцию для категории - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
-    conn = get_db_connection()
-    cursor = conn.cursor()   
-    try:
-        # ★★★ ВАЖНО: Проверяем существование инструкции ★★★
-        cursor.execute("SELECT id FROM task_instructions WHERE id = ?", (instruction_id,))
-        if not cursor.fetchone():
-            logger.error(f"Инструкция с ID {instruction_id} не существует")
-            conn.close()
-            return False
-        
-        # Обновляем инструкцию
-        cursor.execute('''
-            UPDATE task_categories 
-            SET instruction_id = ?
-            WHERE id = ?
-        ''', (instruction_id, category_id))
-        
-        conn.commit()
-        logger.info(f"✅ Обновлена инструкция для категории {category_id} -> {instruction_id}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении инструкции категории: {e}")
-        conn.rollback()
-        return False
-    finally:
-        conn.close()
-    
-    return True
-
-def add_instruction(name, content):
-    """Добавить новую инструкцию"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO task_instructions (name, content)
-        VALUES (?, ?)
-    ''', (name, content))
-    conn.commit()
-    instruction_id = cursor.lastrowid
-    conn.close()
-    return instruction_id
-
-def update_instruction(instruction_id, name, content):
-    """Обновить инструкцию"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE task_instructions 
-        SET name = ?, content = ?
-        WHERE id = ?
-    ''', (name, content, instruction_id))
-    conn.commit()
-    conn.close()
-
-def delete_instruction(instruction_id):
-    """Удалить инструкцию (только если не используется)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Проверяем, используется ли инструкция в категориях
-    cursor.execute("SELECT COUNT(*) FROM task_categories WHERE instruction_id = ?", (instruction_id,))
-    count = cursor.fetchone()[0]
-    
-    if count > 0:
-        conn.close()
-        return False, "Нельзя удалить инструкцию, которая используется в категориях"
-    
-    # Удаляем инструкцию
-    cursor.execute("DELETE FROM task_instructions WHERE id = ?", (instruction_id,))
-    conn.commit()
-    conn.close()
-    return True, "Инструкция удалена"
-
-def get_instruction_stats():
-    """Получить статистику по инструкциям"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Количество инструкций
-    cursor.execute("SELECT COUNT(*) FROM task_instructions")
-    total_instructions = cursor.fetchone()[0] or 0
-    
-    # Инструкции по популярности использования
-    cursor.execute('''
-        SELECT ti.id, ti.name, COUNT(tc.id) as usage_count
-        FROM task_instructions ti
-        LEFT JOIN task_categories tc ON ti.id = tc.instruction_id
-        GROUP BY ti.id
-        ORDER BY usage_count DESC
-    ''')
-    usage_stats = cursor.fetchall()
-    
-    conn.close()
-    return {
-        'total_instructions': total_instructions,
-        'usage_stats': usage_stats
-    }
-
 def get_available_photos_from_other_categories(user_id, exclude_category_id, count=1):
     """Возвращает доступные фото из других категорий, исключая указанную"""
     completed_tasks = get_completed_tasks(user_id)
@@ -1160,93 +936,45 @@ def get_available_photos_from_other_categories(user_id, exclude_category_id, cou
     conn.close()
     
     return photos
-@cached(ttl_seconds=300)
 def get_all_categories():
-    """Получить все категории с информацией об инструкции - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Получить все категории"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # ★★★ ВАЖНО: Используем LEFT JOIN чтобы получить название инструкции ★★★
-    cursor.execute('''
-        SELECT 
-            c.id, 
-            c.name, 
-            c.description, 
-            c.instruction_id,
-            ti.name as instruction_name,
-            ti.content as instruction_content,
-            c.created_at
-        FROM task_categories c
-        LEFT JOIN task_instructions ti ON c.instruction_id = ti.id
-        ORDER BY c.id
-    ''')
-    
+    cursor.execute("SELECT * FROM task_categories ORDER BY id")
     categories = cursor.fetchall()
     conn.close()
-    
-    logger.info(f"Загружено категорий: {len(categories)}")
-    
-    # Логируем первые несколько категорий для отладки
-    for i, cat in enumerate(categories[:3]):
-        logger.info(f"Категория {i+1}: ID={cat[0]}, Name={cat[1]}, InstructionID={cat[3]}, InstructionName={cat[4]}")
-    
     return categories
 
 def get_category(category_id):
-    """Получить информацию о категории с инструкцией - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Получить информацию о категории"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # ★★★ ВАЖНО: Получаем ВСЕ данные с инструкцией ★★★
-    cursor.execute('''
-        SELECT 
-            c.id, 
-            c.name, 
-            c.description, 
-            c.instruction_id,
-            ti.name as instruction_name,
-            ti.content as instruction_content,
-            c.created_at
-        FROM task_categories c
-        LEFT JOIN task_instructions ti ON c.instruction_id = ti.id
-        WHERE c.id = ?
-    ''', (category_id,))
-    
+    cursor.execute("SELECT * FROM task_categories WHERE id = ?", (category_id,))
     category = cursor.fetchone()
     conn.close()
-    
-    if category:
-        logger.info(f"Получена категория: ID={category[0]}, Name={category[1]}, InstructionID={category[3]}, InstructionName={category[4]}")
-    
     return category
 
-def add_category(name, description="", instruction_id=1):
+def add_category(name, description=""):
     """Добавить новую категорию"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO task_categories (name, description, instruction_id) VALUES (?, ?, ?)",
-        (name, description, instruction_id)
+        "INSERT INTO task_categories (name, description) VALUES (?, ?)",
+        (name, description)
     )
     conn.commit()
     category_id = cursor.lastrowid
     conn.close()
     return category_id
 
-def update_category(category_id, name, description="", instruction_id=None):
+def update_category(category_id, name, description=""):
     """Обновить категорию"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    if instruction_id is not None:
-        cursor.execute(
-            "UPDATE task_categories SET name = ?, description = ?, instruction_id = ? WHERE id = ?",
-            (name, description, instruction_id, category_id)
-        )
-    else:
-        cursor.execute(
-            "UPDATE task_categories SET name = ?, description = ? WHERE id = ?",
-            (name, description, category_id)
-        )
+    cursor.execute(
+        "UPDATE task_categories SET name = ?, description = ? WHERE id = ?",
+        (name, description, category_id)
+    )
     conn.commit()
     conn.close()
 
@@ -1384,19 +1112,14 @@ def delete_photo(photo_id): # удаление фото функция из сп
     conn.commit()
     conn.close()
 
-def get_instruction(category_id=None):
-    """Получить инструкцию (для обратной совместимости)"""
-    if category_id:
-        return get_instruction_by_category(category_id)
-    
-    # Старая функция для обратной совместимости
+def get_instruction():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT text FROM instruction WHERE id = 1")
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result else "📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела \"Мои отзывы\""
-    
+    return result[0] if result else "Инструкция еще не установлена. Обратитесь к администратору."
+
 def get_morning_message():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -1727,7 +1450,6 @@ def get_called_users(page=0, limit=10):
         up.photo_id,
         p.category_id,
         c.name as category_name,
-        c.instruction_id,
         up.current_step,
         up.screenshot_status
     FROM user_progress up
@@ -1782,7 +1504,6 @@ def get_screenshot_users(page=0, limit=10):
         up.photo_id,
         p.category_id,
         c.name as category_name,
-        c.instruction_id,
         up.current_step,
         up.screenshot_status,
         up.admin_review_comment
@@ -2519,13 +2240,15 @@ async def send_morning_messages(context: CallbackContext):
                     chat_id=user_id,
                     video=video_id,
                     caption=f"🌅 <b>Доброе утро!</b>\n\n{morning_message}",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    timeout=30
                 )
             else:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"🌅 <b>Доброе утро!</b>\n\n{morning_message}",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    timeout=30
                 )
             
             mark_morning_message_sent(user_id)
@@ -2560,13 +2283,15 @@ async def send_evening_reminders(context: CallbackContext):
                     chat_id=user_id,
                     video=video_id,
                     caption=f"🌙 <b>Добрый вечер!</b>\n\n{evening_reminder}",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    timeout=30
                 )
             else:
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"🌙 <b>Добрый вечер!</b>\n\n{evening_reminder}",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    timeout=30
                 )
             
             mark_evening_reminder_sent(user_id)
@@ -3326,7 +3051,7 @@ async def show_withdrawal_menu(update: Update, context: CallbackContext):
     keyboard = [
         [KeyboardButton("💳 Банковская карта"), KeyboardButton("📱 Qiwi")],
         [KeyboardButton("🧾 ЮMoney"), KeyboardButton("☎️ Баланс телефона")],
-        [KeyboardButton("🏦 Сбербанк Онлайн (СБП)")],
+        [KeyboardButton("🏦 Сбербанк Онлайн")],
         [KeyboardButton("🔙 Назад к балансу")]  # Измененная кнопка
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -3351,7 +3076,7 @@ async def show_withdrawal_menu(update: Update, context: CallbackContext):
         if payment_methods[5]:  # phone_number
             message += f"☎️ Телефон: {payment_methods[5]}\n"
         if payment_methods[6]:  # sber_account
-            message += f"🏦 Сбербанк(СБП): {payment_methods[6]}\n"
+            message += f"🏦 Сбербанк: {payment_methods[6]}\n"
         message += "\n"
     
     message += "💡 <i>Реквизиты будут сохранены для будущих выплат</i>"
@@ -3368,7 +3093,7 @@ async def handle_withdrawal_method(update: Update, context: CallbackContext):
         "📱 Qiwi": "qiwi", 
         "🧾 ЮMoney": "yoomoney",
         "☎️ Баланс телефона": "phone",
-        "🏦 Сбербанк Онлайн(СБП)": "sber"
+        "🏦 Сбербанк Онлайн": "sber"
     }
     
     if text in method_map:
@@ -3701,7 +3426,7 @@ async def withdrawal_status_command(update: Update, context: CallbackContext):
                 'qiwi': '📱 Qiwi', 
                 'yoomoney': '🧾 ЮMoney',
                 'phone': '☎️ Телефон',
-                'sber': '🏦 Сбербанк (СБП)'
+                'sber': '🏦 Сбербанк'
             }
             
             message = f"📋 <b>Статус выплаты #{w_id}</b>\n\n"
@@ -3950,324 +3675,7 @@ async def admin_panel(update: Update, context: CallbackContext):
         parse_mode="HTML",
         reply_markup=reply_markup
     )
-async def manage_instructions(update: Update, context: CallbackContext):
-    """Главное меню управления инструкциями"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    update_user_activity(update.effective_user.id)
-    
-    instructions = get_all_instructions()
-    stats = get_instruction_stats()
-    
-    message = "📚 <b>Управление инструкциями:</b>\n\n"
-    message += f"📊 <b>Всего инструкций:</b> {stats['total_instructions']}\n\n"
-    
-    if not instructions:
-        message += "Инструкции не найдены. Создайте первую инструкцию."
-    else:
-        message += "<b>Доступные инструкции:</b>\n"
-        for instruction in instructions:
-            instruction_id, name, content, created_at = instruction
-            
-            # Считаем сколько категорий используют эту инструкцию
-            usage_count = 0
-            for stat in stats['usage_stats']:
-                if stat[0] == instruction_id:
-                    usage_count = stat[2]
-                    break
-            
-            message += f"🆔 <b>{instruction_id}: {name}</b>\n"
-            message += f"📝 <b>Используется в:</b> {usage_count} категориях\n"
-            message += f"📅 <b>Создана:</b> {created_at}\n\n"
-    
-    keyboard = [
-        [KeyboardButton("➕ Добавить инструкцию"), KeyboardButton("✏️ Редактировать инструкцию")],
-        [KeyboardButton("🗑️ Удалить инструкцию"), KeyboardButton("📊 Статистика инструкций")],
-        [KeyboardButton("🔙 Назад в редактор")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
-    await safe_reply(update, context, message, parse_mode="HTML", reply_markup=reply_markup)
 
-async def add_instruction_handler(update: Update, context: CallbackContext):
-    """Обработчик добавления инструкции"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    await safe_reply(update, context,
-        "📝 <b>Добавление новой инструкции:</b>\n\n"
-        "Введите название и содержание инструкции в формате:\n"
-        "<code>Название инструкции | Содержание инструкции</code>\n\n"
-        "Пример:\n"
-        "<code>Для автосалонов | 📝 <b>Инструкция для автосалонов:</b>\\n\\n1. Позвоните по указанному номеру\\n2. Уточните информацию об автомобиле\\n3. Подтвердите выполнение задания\\n4. Оставьте отзыв на следующий день</code>\n\n"
-        "Или отправьте /cancel для отмены",
-        parse_mode="HTML"
-    )
-    context.user_data['waiting_for_new_instruction'] = True
-
-async def handle_instruction_input(update: Update, context: CallbackContext):
-    """Обработчик ввода данных инструкции"""
-    if not context.user_data.get('waiting_for_new_instruction'):
-        return
-    
-    text = update.message.text
-    
-    if '|' not in text:
-        await safe_reply(update, context,
-            "❌ <b>Неверный формат!</b>\n\n"
-            "Используйте формат: <code>Название инструкции | Содержание инструкции</code>\n\n"
-            "Или отправьте /cancel для отмены",
-            parse_mode="HTML"
-        )
-        return
-    
-    try:
-        name, content = [part.strip() for part in text.split('|', 1)]
-        
-        if not name:
-            await safe_reply(update, context,
-                "❌ <b>Название инструкции не может быть пустым!</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        if not content:
-            await safe_reply(update, context,
-                "❌ <b>Содержание инструкции не может быть пустым!</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Проверяем, существует ли уже инструкция с таким названием
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM task_instructions WHERE name = ?", (name,))
-        existing = cursor.fetchone()
-        conn.close()
-        
-        if existing:
-            await safe_reply(update, context,
-                f"❌ <b>Инструкция с названием '{name}' уже существует!</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Добавляем инструкцию
-        instruction_id = add_instruction(name, content)
-        
-        await safe_reply(update, context,
-            f"✅ <b>Инструкция успешно добавлена!</b>\n\n"
-            f"🆔 ID: {instruction_id}\n"
-            f"📝 Название: {name}\n"
-            f"📋 Содержание:\n{content}",
-            parse_mode="HTML"
-        )
-        
-        # Сбрасываем состояние
-        context.user_data['waiting_for_new_instruction'] = False
-        
-    except Exception as e:
-        logger.error(f"Ошибка при добавлении инструкции: {e}")
-        await safe_reply(update, context,
-            "❌ <b>Произошла ошибка при добавлении инструкции.</b>",
-            parse_mode="HTML"
-        )
-
-async def edit_instruction_handler(update: Update, context: CallbackContext):
-    """Обработчик редактирования инструкции"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    await safe_reply(update, context,
-        "✏️ <b>Редактирование инструкции:</b>\n\n"
-        "Введите ID инструкции, которую хотите отредактировать.\n\n"
-        "Или отправьте /cancel для отмены",
-        parse_mode="HTML"
-    )
-    context.user_data['waiting_for_edit_instruction_id'] = True
-
-async def handle_edit_instruction_id_input(update: Update, context: CallbackContext):
-    """Обработчик ввода ID инструкции для редактирования"""
-    if not context.user_data.get('waiting_for_edit_instruction_id'):
-        return
-    
-    text = update.message.text
-    
-    try:
-        instruction_id = int(text)
-        instruction = get_instruction_by_id(instruction_id)
-        
-        if not instruction:
-            await safe_reply(update, context,
-                f"❌ Инструкция с ID {instruction_id} не найдена.",
-                parse_mode="HTML"
-            )
-            return
-        
-        inst_id, name, content, created_at = instruction
-        
-        # Сохраняем данные для следующего шага
-        context.user_data['editing_instruction_id'] = instruction_id
-        context.user_data['editing_instruction_name'] = name
-        context.user_data['waiting_for_edit_instruction_id'] = False
-        context.user_data['waiting_for_edit_instruction_data'] = True
-        
-        await safe_reply(update, context,
-            f"✏️ <b>Редактирование инструкции:</b>\n\n"
-            f"Текущие данные:\n"
-            f"Название: {name}\n"
-            f"Содержание:\n{content}\n\n"
-            f"Введите новые данные в формате:\n"
-            f"<code>Новое название | Новое содержание</code>\n\n"
-            f"Или отправьте /cancel для отмены",
-            parse_mode="HTML"
-        )
-        
-    except ValueError:
-        await safe_reply(update, context,
-            "❌ Неверный формат ID! Введите числовой ID инструкции.",
-            parse_mode="HTML"
-        )
-
-async def handle_edit_instruction_data_input(update: Update, context: CallbackContext):
-    """Обработчик ввода новых данных инструкции"""
-    if not context.user_data.get('waiting_for_edit_instruction_data'):
-        return
-    
-    text = update.message.text
-    
-    if '|' not in text:
-        await safe_reply(update, context,
-            "❌ <b>Неверный формат!</b>\n\n"
-            "Используйте формат: <code>Новое название | Новое содержание</code>\n\n"
-            "Или отправьте /cancel для отмены",
-            parse_mode="HTML"
-        )
-        return
-    
-    try:
-        new_name, new_content = [part.strip() for part in text.split('|', 1)]
-        instruction_id = context.user_data['editing_instruction_id']
-        
-        if not new_name:
-            await safe_reply(update, context,
-                "❌ <b>Название инструкции не может быть пустым!</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        if not new_content:
-            await safe_reply(update, context,
-                "❌ <b>Содержание инструкции не может быть пустым!</b>",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Обновляем инструкцию
-        update_instruction(instruction_id, new_name, new_content)
-        
-        await safe_reply(update, context,
-            f"✅ <b>Инструкция успешно обновлена!</b>\n\n"
-            f"🆔 ID: {instruction_id}\n"
-            f"📝 Новое название: {new_name}\n"
-            f"📋 Новое содержание:\n{new_content}",
-            parse_mode="HTML"
-        )
-        
-        # Сбрасываем состояния
-        for key in ['editing_instruction_id', 'editing_instruction_name', 'waiting_for_edit_instruction_data']:
-            if key in context.user_data:
-                del context.user_data[key]
-                
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении инструкции: {e}")
-        await safe_reply(update, context,
-            "❌ <b>Произошла ошибка при обновлении инструкции.</b>",
-            parse_mode="HTML"
-        )
-
-async def delete_instruction_handler(update: Update, context: CallbackContext):
-    """Обработчик удаления инструкции"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    await safe_reply(update, context,
-        "🗑️ <b>Удаление инструкции:</b>\n\n"
-        "Введите ID инструкции, которую хотите удалить.\n\n"
-        "⚠️ <b>Внимание:</b> Удалить можно только неиспользуемые инструкции.\n\n"
-        "Или отправьте /cancel для отмены",
-        parse_mode="HTML"
-    )
-    context.user_data['waiting_for_delete_instruction'] = True
-
-async def handle_delete_instruction_input(update: Update, context: CallbackContext):
-    """Обработчик ввода ID инструкции для удаления"""
-    if not context.user_data.get('waiting_for_delete_instruction'):
-        return
-    
-    text = update.message.text
-    
-    try:
-        instruction_id = int(text)
-        
-        # Пытаемся удалить инструкцию
-        success, message = delete_instruction(instruction_id)
-        
-        if success:
-            await safe_reply(update, context,
-                f"✅ <b>Инструкция успешно удалена!</b>\n\n"
-                f"ID: {instruction_id}\n"
-                f"{message}",
-                parse_mode="HTML"
-            )
-        else:
-            await safe_reply(update, context,
-                f"❌ <b>Не удалось удалить инструкцию!</b>\n\n"
-                f"ID: {instruction_id}\n"
-                f"Причина: {message}",
-                parse_mode="HTML"
-            )
-        
-        # Сбрасываем состояние
-        context.user_data['waiting_for_delete_instruction'] = False
-        
-    except ValueError:
-        await safe_reply(update, context,
-            "❌ Неверный формат ID! Введите числовой ID инструкции.",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при удалении инструкции: {e}")
-        await safe_reply(update, context,
-            f"❌ Произошла ошибка при удалении инструкции: {str(e)}",
-            parse_mode="HTML"
-        )
-        context.user_data['waiting_for_delete_instruction'] = False
-
-async def instruction_stats_handler(update: Update, context: CallbackContext):
-    """Показать статистику по инструкциям"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    stats = get_instruction_stats()
-    
-    message = "📊 <b>Статистика по инструкциям:</b>\n\n"
-    message += f"📚 <b>Всего инструкций:</b> {stats['total_instructions']}\n\n"
-    
-    if stats['usage_stats']:
-        message += "<b>Инструкции по популярности:</b>\n"
-        for stat in stats['usage_stats']:
-            instruction_id, name, usage_count = stat
-            message += f"🆔 <b>{instruction_id}: {name}</b>\n"
-            message += f"📁 Используется в: {usage_count} категориях\n\n"
-    
-    await safe_reply(update, context, message, parse_mode="HTML")
 # Редактор контента
 async def editor_panel(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
@@ -4279,8 +3687,8 @@ async def editor_panel(update: Update, context: CallbackContext):
     keyboard = [
         [KeyboardButton("🌅 Утреннее сообщение"), KeyboardButton("🌙 Вечернее напоминание")],
         [KeyboardButton("📝 Информационные кнопки"), KeyboardButton("🖼️ Добавить фото")],
-        [KeyboardButton("📁 Управление категориями"), KeyboardButton("🖼️ Список фото")],
-        [KeyboardButton("📚 Управление инструкциями"), KeyboardButton("🔙 Назад в админ-панель")]  # Новая кнопка
+        [KeyboardButton("📁 Управление категориями"), KeyboardButton("🖼️ Список фото")],  # Новая кнопка
+        [KeyboardButton("🔙 Назад в админ-панель")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -4290,7 +3698,7 @@ async def editor_panel(update: Update, context: CallbackContext):
         reply_markup=reply_markup
     )
 async def manage_categories(update: Update, context: CallbackContext):
-    """Главное меню управления категориями - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Главное меню управления категориями"""
     if update.effective_user.id != ADMIN_ID:
         await safe_reply(update, context, "У вас нет доступа к этой функции.")
         return
@@ -4305,188 +3713,27 @@ async def manage_categories(update: Update, context: CallbackContext):
         message += "Категории не найдены. Создайте первую категорию."
     else:
         for category in categories:
-            # Теперь у нас 7 значений в категории
-            if len(category) >= 7:
-                category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-            else:
-                # Для обратной совместимости
-                category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[0], category[1], category[2], None, "Неизвестно", None, category[3] if len(category) > 3 else None
-            
+            category_id, name, description, created_at = category
             # Считаем количество фото в категории
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM photos WHERE category_id = ?", (category_id,))
-            photo_count = cursor.fetchone()[0] or 0
+            photo_count = cursor.fetchone()[0]
             conn.close()
             
             message += f"🆔 <b>{category_id}: {name}</b>\n"
             message += f"📝 Описание: {description or 'нет'}\n"
-            
-            # ★★★ ВАЖНО: Правильно показываем инструкцию ★★★
-            if instruction_id and instruction_name and instruction_name != "Неизвестно":
-                message += f"📚 Инструкция: {instruction_name} (ID: {instruction_id})\n"
-            else:
-                message += f"📚 Инструкция: ❌ НЕ НАЗНАЧЕНА\n"
-            
             message += f"🖼️ Фото: {photo_count} шт.\n"
             message += f"📅 Создана: {created_at}\n\n"
     
     keyboard = [
         [KeyboardButton("➕ Добавить категорию"), KeyboardButton("✏️ Редактировать категорию")],
         [KeyboardButton("🗑️ Удалить категорию"), KeyboardButton("📊 Статистика по категориям")],
-        [KeyboardButton("🖼️ Назначить категорию фото"), KeyboardButton("📚 Назначить инструкцию категории")],
-        [KeyboardButton("🔙 Назад в редактор")]
+        [KeyboardButton("🖼️ Назначить категорию фото"), KeyboardButton("🔙 Назад в редактор")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     await safe_reply(update, context, message, parse_mode="HTML", reply_markup=reply_markup)
-    
-async def assign_instruction_to_category_handler(update: Update, context: CallbackContext):
-    """Обработчик назначения инструкции категории - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
-    if update.effective_user.id != ADMIN_ID:
-        await safe_reply(update, context, "У вас нет доступа к этой функции.")
-        return
-    
-    # Получаем список категорий и инструкций для справки
-    categories = get_all_categories()
-    instructions = get_all_instructions()
-    
-    message = "📚 <b>Назначение инструкции категории</b>\n\n"
-    
-    # Показываем доступные категории
-    message += "<b>Доступные категории:</b>\n"
-    for category in categories:
-        if len(category) >= 7:
-            cat_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            # Для обратной совместимости
-            cat_id, name, description, instruction_id = category[0], category[1], category[2], category[3] if len(category) > 3 else None
-            instruction_name = "Неизвестно"
-        
-        # ★★★ ВАЖНО: Правильно показываем текущую инструкцию ★★★
-        if instruction_id and instruction_name and instruction_name != "Неизвестно":
-            current_instruction = f"{instruction_name} (ID: {instruction_id})"
-        else:
-            current_instruction = "❌ НЕТ"
-        
-        message += f"🆔 <b>{cat_id}:</b> {name} (текущая инструкция: {current_instruction})\n"
-    
-    message += "\n<b>Доступные инструкции:</b>\n"
-    for instruction in instructions:
-        inst_id, name, content, created_at = instruction
-        message += f"🆔 <b>{inst_id}:</b> {name}\n"
-    
-    message += "\n📝 <b>Введите ID категории и ID инструкции в формате:</b>\n"
-    message += "<code>ID_категории | ID_инструкции</code>\n\n"
-    message += "<b>Пример:</b>\n<code>1 | 2</code>\n\n"
-    message += "Или отправьте /cancel для отмены"
-    
-    await safe_reply(update, context, message, parse_mode="HTML")
-    context.user_data['waiting_for_assign_instruction'] = True
-
-async def handle_assign_instruction_input(update: Update, context: CallbackContext):
-    """Обработчик ввода данных для назначения инструкции категории"""
-    if not context.user_data.get('waiting_for_assign_instruction'):
-        return
-    
-    text = update.message.text.strip()
-    
-    # Проверяем команду /cancel
-    if text == '/cancel':
-        context.user_data['waiting_for_assign_instruction'] = False
-        await safe_reply(update, context, "❌ Операция отменена.")
-        return
-    
-    # Проверяем наличие разделителя
-    if '|' not in text:
-        await safe_reply(update, context,
-            "❌ <b>Неверный формат!</b>\n\n"
-            "Используйте формат: <code>ID_категории | ID_инструкции</code>\n\n"
-            "<b>Пример:</b>\n"
-            "<code>1 | 2</code>\n\n"
-            "Или отправьте /cancel для отмены",
-            parse_mode="HTML"
-        )
-        return
-    
-    try:
-        # Разделяем и очищаем от лишних пробелов
-        parts = [part.strip() for part in text.split('|')]
-        
-        if len(parts) != 2:
-            raise ValueError("Нужно указать ровно два числа, разделенных символом |")
-        
-        category_id_str, instruction_id_str = parts
-        
-        # Проверяем, что это числа
-        if not category_id_str.isdigit() or not instruction_id_str.isdigit():
-            raise ValueError("ID должны быть числами")
-        
-        category_id = int(category_id_str)
-        instruction_id = int(instruction_id_str)
-        
-        # Проверяем существование категории
-        category = get_category(category_id)
-        if not category:
-            await safe_reply(update, context,
-                f"❌ Категория с ID {category_id} не найдена.",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Проверяем существование инструкции
-        instruction = get_instruction_by_id(instruction_id)
-        if not instruction:
-            await safe_reply(update, context,
-                f"❌ Инструкция с ID {instruction_id} не найдена.",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Обновляем инструкцию категории
-        update_category_instruction(category_id, instruction_id)
-        
-        # Получаем данные для отображения
-        cat_id, cat_name, cat_description, cat_instruction_id, cat_created_at = category
-        inst_id, inst_name, inst_content, inst_created_at = instruction
-        
-        await safe_reply(update, context,
-            f"✅ <b>Инструкция назначена категории успешно!</b>\n\n"
-            f"📁 <b>Категория:</b> {cat_name} (ID: {category_id})\n"
-            f"📚 <b>Инструкция:</b> {inst_name} (ID: {instruction_id})\n\n"
-            f"📝 <b>Содержание инструкции:</b>\n{inst_content[:200]}...",
-            parse_mode="HTML"
-        )
-        
-        # Сбрасываем состояние
-        context.user_data['waiting_for_assign_instruction'] = False
-        
-    except ValueError as e:
-        if "Нужно указать" in str(e):
-            await safe_reply(update, context,
-                "❌ <b>Неверный формат!</b>\n\n"
-                "Нужно указать ровно два числа, разделенных символом |\n\n"
-                "<b>Пример:</b>\n"
-                "<code>1 | 2</code>\n\n"
-                "Или отправьте /cancel для отмены",
-                parse_mode="HTML"
-            )
-        else:
-            await safe_reply(update, context,
-                f"❌ <b>Ошибка ввода!</b>\n\n"
-                f"{str(e)}\n\n"
-                "<b>Пример правильного формата:</b>\n"
-                "<code>1 | 2</code>\n\n"
-                "Или отправьте /cancel для отмены",
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        logger.error(f"Ошибка при назначении инструкции категории: {e}")
-        await safe_reply(update, context,
-            f"❌ <b>Произошла ошибка:</b> {str(e)[:100]}...",
-            parse_mode="HTML"
-        )
-        context.user_data['waiting_for_assign_instruction'] = False
 
 async def add_category_handler(update: Update, context: CallbackContext):
     """Обработчик добавления категории"""
@@ -4569,31 +3816,21 @@ async def handle_category_input(update: Update, context: CallbackContext):
         )
 
 async def edit_category_handler(update: Update, context: CallbackContext):
+    """Обработчик редактирования категории"""
     if update.effective_user.id != ADMIN_ID:
         await safe_reply(update, context, "У вас нет доступа к этой функции.")
         return
     
-    categories = get_all_categories()
-    
-    message = "✏️ <b>Редактирование категории:</b>\n\n"
-    message += "<b>Доступные категории:</b>\n"
-    
-    for category in categories:
-        if len(category) >= 7:
-            category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            category_id, name, description = category[0], category[1], category[2]
-        
-        message += f"🆔 <b>{category_id}:</b> {name}\n"
-    
-    message += "\n📝 <b>Введите ID категории, которую хотите отредактировать:</b>\n\n"
-    message += "Или отправьте /cancel для отмены"
-    
-    await safe_reply(update, context, message, parse_mode="HTML")
+    await safe_reply(update, context,
+        "✏️ <b>Редактирование категории:</b>\n\n"
+        "Введите ID категории, которую хотите отредактировать.\n\n"
+        "Или отправьте /cancel для отмены",
+        parse_mode="HTML"
+    )
     context.user_data['waiting_for_edit_category_id'] = True
 
 async def handle_edit_category_id_input(update: Update, context: CallbackContext):
-    """Обработчик ввода ID категории для редактирования - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Обработчик ввода ID категории для редактирования"""
     if not context.user_data.get('waiting_for_edit_category_id'):
         return
     
@@ -4610,13 +3847,7 @@ async def handle_edit_category_id_input(update: Update, context: CallbackContext
             )
             return
         
-        # ★★★ ИСПРАВЛЕНИЕ: Теперь у нас 7 значений ★★★
-        if len(category) >= 7:
-            cat_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            cat_id, name, description = category[0], category[1], category[2]
-            instruction_id = None
-            instruction_name = None
+        cat_id, name, description, created_at = category
         
         # Сохраняем данные для следующего шага
         context.user_data['editing_category_id'] = category_id
@@ -4624,15 +3855,11 @@ async def handle_edit_category_id_input(update: Update, context: CallbackContext
         context.user_data['waiting_for_edit_category_id'] = False
         context.user_data['waiting_for_edit_category_data'] = True
         
-        # ★★★ ИСПРАВЛЕННАЯ F-СТРОКА: правильные кавычки ★★★
-        instruction_info = f"📚 Инструкция: {instruction_name or 'нет'}\n" if instruction_name else ''
-        
         await safe_reply(update, context,
             f"✏️ <b>Редактирование категории:</b>\n\n"
             f"Текущие данные:\n"
             f"Название: {name}\n"
-            f"Описание: {description or 'нет'}\n"
-            f"{instruction_info}\n"
+            f"Описание: {description or 'нет'}\n\n"
             f"Введите новые данные в формате:\n"
             f"<code>Новое название | Новое описание</code>\n\n"
             f"Или отправьте /cancel для отмены",
@@ -4652,27 +3879,17 @@ async def handle_edit_category_data_input(update: Update, context: CallbackConte
     
     text = update.message.text
     
-    # Формат: Новое название | Новое описание | ID_инструкции (опционально)
-    parts = [part.strip() for part in text.split('|', 2)]
-    
-    if len(parts) < 2:
+    if '|' not in text:
         await safe_reply(update, context,
             "❌ <b>Неверный формат!</b>\n\n"
-            "Используйте формат: <code>Новое название | Новое описание</code>\n"
-            "Или: <code>Новое название | Новое описание | ID_инструкции</code>\n\n"
+            "Используйте формат: <code>Новое название | Новое описание</code>\n\n"
             "Или отправьте /cancel для отмены",
             parse_mode="HTML"
         )
         return
     
     try:
-        if len(parts) == 3:
-            new_name, new_description, instruction_id_str = parts
-            instruction_id = int(instruction_id_str)
-        else:
-            new_name, new_description = parts
-            instruction_id = None  # Не меняем инструкцию
-        
+        new_name, new_description = [part.strip() for part in text.split('|', 1)]
         category_id = context.user_data['editing_category_id']
         
         if not new_name:
@@ -4683,31 +3900,21 @@ async def handle_edit_category_data_input(update: Update, context: CallbackConte
             return
         
         # Обновляем категорию
-        update_category(category_id, new_name, new_description, instruction_id)
+        update_category(category_id, new_name, new_description)
         
-        message = f"✅ <b>Категория успешно обновлена!</b>\n\n"
-        message += f"🆔 ID: {category_id}\n"
-        message += f"📝 Новое название: {new_name}\n"
-        message += f"📋 Новое описание: {new_description}\n"
-        
-        if instruction_id:
-            instruction = get_instruction_by_id(instruction_id)
-            if instruction:
-                message += f"📚 Инструкция: {instruction[1]}\n"
-        
-        await safe_reply(update, context, message, parse_mode="HTML")
+        await safe_reply(update, context,
+            f"✅ <b>Категория успешно обновлена!</b>\n\n"
+            f"🆔 ID: {category_id}\n"
+            f"📝 Новое название: {new_name}\n"
+            f"📋 Новое описание: {new_description}",
+            parse_mode="HTML"
+        )
         
         # Сбрасываем состояния
         for key in ['editing_category_id', 'editing_category_name', 'waiting_for_edit_category_data']:
             if key in context.user_data:
                 del context.user_data[key]
                 
-    except ValueError as e:
-        await safe_reply(update, context,
-            f"❌ Ошибка формата: {e}\n"
-            "ID инструкции должно быть числом.",
-            parse_mode="HTML"
-        )
     except Exception as e:
         logger.error(f"Ошибка при обновлении категории: {e}")
         await safe_reply(update, context,
@@ -4716,28 +3923,18 @@ async def handle_edit_category_data_input(update: Update, context: CallbackConte
         )
 
 async def delete_category_handler(update: Update, context: CallbackContext):
+    """Обработчик удаления категории"""
     if update.effective_user.id != ADMIN_ID:
         await safe_reply(update, context, "У вас нет доступа к этой функции.")
         return
     
-    categories = get_all_categories()
-    
-    message = "🗑️ <b>Удаление категории:</b>\n\n"
-    message += "<b>Доступные категории:</b>\n"
-    
-    for category in categories:
-        if len(category) >= 7:
-            category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            category_id, name, description = category[0], category[1], category[2]
-        
-        message += f"🆔 <b>{category_id}:</b> {name}\n"
-    
-    message += "\n📝 <b>Введите ID категории, которую хотите удалить.</b>\n\n"
-    message += "⚠️ <b>Внимание:</b> Удалить можно только пустые категории (без фото).\n\n"
-    message += "Или отправьте /cancel для отмены"
-    
-    await safe_reply(update, context, message, parse_mode="HTML")
+    await safe_reply(update, context,
+        "🗑️ <b>Удаление категории:</b>\n\n"
+        "Введите ID категории, которую хотите удалить.\n\n"
+        "⚠️ <b>Внимание:</b> Удалить можно только пустые категории (без фото).\n\n"
+        "Или отправьте /cancel для отмены",
+        parse_mode="HTML"
+    )
     context.user_data['waiting_for_delete_category'] = True
 
 async def handle_delete_category_input(update: Update, context: CallbackContext):
@@ -4785,7 +3982,7 @@ async def handle_delete_category_input(update: Update, context: CallbackContext)
         context.user_data['waiting_for_delete_category'] = False
 
 async def category_stats_handler(update: Update, context: CallbackContext):
-    """Показать статистику по категориям - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Показать статистику по категориям"""
     if update.effective_user.id != ADMIN_ID:
         await safe_reply(update, context, "У вас нет доступа к этой функции.")
         return
@@ -4799,13 +3996,7 @@ async def category_stats_handler(update: Update, context: CallbackContext):
     message = "📊 <b>Статистика по категориям:</b>\n\n"
     
     for category in categories:
-        # ★★★ ИСПРАВЛЕНИЕ: Теперь у нас 7 значений ★★★
-        if len(category) >= 7:
-            category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            # Для обратной совместимости
-            category_id, name, description = category[0], category[1], category[2]
-            created_at = category[3] if len(category) > 3 else None
+        category_id, name, description, created_at = category
         
         # Получаем статистику
         conn = get_db_connection()
@@ -4818,41 +4009,24 @@ async def category_stats_handler(update: Update, context: CallbackContext):
         conn.close()
         
         message += f"📁 <b>{name}</b> (ID: {category_id})\n"
-        message += f"🖼️ Фото: {photo_count} шт.\n"
-        
-        # Добавляем информацию об инструкции если есть
-        if len(category) >= 7 and instruction_name and instruction_name != "Неизвестно":
-            message += f"📚 Инструкция: {instruction_name}\n"
-        
-        message += "\n"
+        message += f"🖼️ Фото: {photo_count} шт.\n\n"
     
     await safe_reply(update, context, message, parse_mode="HTML")
 
 async def assign_category_to_photo_handler(update: Update, context: CallbackContext):
-    """Обработчик назначения категории фото - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Обработчик назначения категории фото"""
     if update.effective_user.id != ADMIN_ID:
         await safe_reply(update, context, "У вас нет доступа к этой функции.")
         return
     
-    categories = get_all_categories()
-    
-    message = "🖼️ <b>Назначение категории фото:</b>\n\n"
-    message += "<b>Доступные категории:</b>\n"
-    
-    for category in categories:
-        if len(category) >= 7:
-            category_id, name, description, instruction_id, instruction_name, instruction_content, created_at = category[:7]
-        else:
-            category_id, name, description = category[0], category[1], category[2]
-        
-        message += f"🆔 <b>{category_id}:</b> {name}\n"
-    
-    message += "\n📝 <b>Введите ID фото и ID категории в формате:</b>\n"
-    message += "<code>ID_фото | ID_категории</code>\n\n"
-    message += "Пример: <code>15 | 2</code>\n\n"
-    message += "Или отправьте /cancel для отмены"
-    
-    await safe_reply(update, context, message, parse_mode="HTML")
+    await safe_reply(update, context,
+        "🖼️ <b>Назначение категории фото:</b>\n\n"
+        "Введите ID фото и ID категории в формате:\n"
+        "<code>ID_фото | ID_категории</code>\n\n"
+        "Пример: <code>15 | 2</code>\n\n"
+        "Или отправьте /cancel для отмены",
+        parse_mode="HTML"
+    )
     context.user_data['waiting_for_assign_category'] = True
 
 async def handle_assign_category_input(update: Update, context: CallbackContext):
@@ -4956,13 +4130,13 @@ async def remind_no_screenshot_command(update, context):
     user_id = update.effective_user.id
 
     if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ У вас нет доступа к этой команде.")
+        await safe_reply(update, context, "❌ У вас нет доступа к этой команде.")
         return
 
     users = get_users_waiting_screenshot_after_evening()
 
     if not users:
-        await update.message.reply_text("✅ Нет пользователей для напоминания.")
+        await safe_reply(update, context, "✅ Нет пользователей для напоминания.")
         return
 
     text = (
@@ -4974,21 +4148,59 @@ async def remind_no_screenshot_command(update, context):
 
     sent = 0
     errors = 0
+    timeout_errors = 0
 
     for uid in users:
         try:
-            await context.bot.send_message(chat_id=uid, text=text)
-            sent += 1
-            await asyncio.sleep(0.09)
+            # Пытаемся отправить с таймаутом и повторной попыткой
+            success = False
+            max_retries = 3
+            
+            for attempt in range(max_retries):
+                try:
+                    await context.bot.send_message(
+                        chat_id=uid, 
+                        text=text,
+                        timeout=30  # Увеличиваем таймаут до 30 секунд
+                    )
+                    success = True
+                    break
+                except Exception as e:
+                    if "Timed out" in str(e) or "timeout" in str(e).lower():
+                        logger.warning(f"Таймаут при отправке пользователю {uid} (попытка {attempt + 1}/{max_retries})")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(2)  # Ждем 2 секунды перед повторной попыткой
+                            continue
+                        else:
+                            timeout_errors += 1
+                            errors += 1
+                            break
+                    else:
+                        raise
+            
+            if success:
+                sent += 1
+                
+            await asyncio.sleep(0.3)  # Увеличиваем задержку между отправками
         except Exception as e:
-            errors += 1
-            logger.warning(f"Не удалось отправить сообщение {uid}: {e}")
+            # Логируем другие ошибки
+            if "Timed out" not in str(e) and "timeout" not in str(e).lower():
+                logger.warning(f"Не удалось отправить сообщение пользователю {uid}: {e}")
+                errors += 1
 
-    await update.message.reply_text(
-        f"📊 Рассылка завершена\n\n"
+    report_text = (
+        f"📊 <b>Рассылка завершена</b>\n\n"
         f"✅ Отправлено: {sent}\n"
+        f"⏳ Таймаутов: {timeout_errors}\n"
         f"❌ Ошибки: {errors}"
     )
+    
+    try:
+        await update.message.reply_text(report_text, parse_mode="HTML")
+    except Exception as e:
+        # Если не удалось отправить отчет, пробуем через safe_reply
+        await safe_reply(update, context, report_text, parse_mode="HTML")
+        logger.warning(f"Не удалось отправить отчет о рассылке: {e}")
 
 # Показать список всех пользователей с пагинацией
 async def show_all_users(update: Update, context: CallbackContext, page=0):
@@ -5337,7 +4549,7 @@ async def show_all_photos(update: Update, context: CallbackContext, page=0):
     
     # Получаем фото для текущей страницы с информацией о категориях
     cursor.execute('''
-        SELECT p.id, p.photo_id, p.category_id, c.name as category_name, c.instruction_id
+        SELECT p.id, p.photo_id, p.category_id, c.name as category_name
         FROM photos p
         LEFT JOIN task_categories c ON p.category_id = c.id
         ORDER BY p.id
@@ -5366,17 +4578,10 @@ async def show_all_photos(update: Update, context: CallbackContext, page=0):
     
     # Отправляем фото по одному
     for photo in photos:
-        photo_id, photo_file_id, category_id, category_name, instruction_id = photo
+        photo_id, photo_file_id, category_id, category_name = photo
         
         if not category_name:
             category_name = "Без категории"
-        
-        # Получаем название инструкции
-        instruction_name = "По умолчанию"
-        if instruction_id:
-            instruction = get_instruction_by_id(instruction_id)
-            if instruction:
-                instruction_name = instruction[1]
         
         # Получаем все категории для кнопок
         all_categories = get_all_categories()
@@ -5387,7 +4592,7 @@ async def show_all_photos(update: Update, context: CallbackContext, page=0):
         
         # Добавляем кнопки для смены категории
         for cat in all_categories:
-            cat_id, name, description, cat_instruction_id, created_at = cat[:5]
+            cat_id, name, description, created_at = cat
             if cat_id != category_id:  # Не показываем текущую категорию
                 keyboard.append([InlineKeyboardButton(f"📁 В категорию: {name}", 
                                                      callback_data=f"change_category_{photo_id}_{cat_id}")])
@@ -5395,22 +4600,18 @@ async def show_all_photos(update: Update, context: CallbackContext, page=0):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         try:
-            caption = f"🖼️ <b>ID:</b> {photo_id}\n"
-            caption += f"📁 <b>Категория:</b> {category_name}\n"
-            caption += f"📚 <b>Инструкция:</b> {instruction_name}"
-            
             if update.callback_query:
                 await context.bot.send_photo(
                     chat_id=update.effective_chat.id,
                     photo=photo_file_id,
-                    caption=caption,
+                    caption=f"🖼️ <b>ID:</b> {photo_id}\n📁 <b>Категория:</b> {category_name}",
                     parse_mode="HTML",
                     reply_markup=reply_markup
                 )
             else:
                 await update.message.reply_photo(
                     photo=photo_file_id,
-                    caption=caption,
+                    caption=f"🖼️ <b>ID:</b> {photo_id}\n📁 <b>Категория:</b> {category_name}",
                     parse_mode="HTML",
                     reply_markup=reply_markup
                 )
@@ -5459,31 +4660,16 @@ async def handle_change_category(update: Update, context: CallbackContext):
         conn.commit()
         
         # Получаем информацию о категории
-        cursor.execute("SELECT name, instruction_id FROM task_categories WHERE id = ?", (category_id,))
+        cursor.execute("SELECT name FROM task_categories WHERE id = ?", (category_id,))
         category_result = cursor.fetchone()
-        
-        if category_result:
-            category_name, instruction_id = category_result
-            category_name = category_name or "Неизвестно"
-            
-            # Получаем название инструкции
-            instruction_name = "По умолчанию"
-            if instruction_id:
-                cursor.execute("SELECT name FROM task_instructions WHERE id = ?", (instruction_id,))
-                instruction_result = cursor.fetchone()
-                if instruction_result:
-                    instruction_name = instruction_result[0]
-        else:
-            category_name = "Неизвестно"
-            instruction_name = "По умолчанию"
+        category_name = category_result[0] if category_result else "Неизвестно"
         
         conn.close()
         
         await query.edit_message_caption(
             caption=f"✅ <b>Категория изменена!</b>\n\n"
                    f"🖼️ Фото ID: {photo_id}\n"
-                   f"📁 Новая категория: {category_name}\n"
-                   f"📚 Инструкция: {instruction_name}",
+                   f"📁 Новая категория: {category_name}",
             parse_mode="HTML"
         )
 
@@ -5513,8 +4699,7 @@ async def add_photo_handler(update: Update, context: CallbackContext):
         # Создаем клавиатуру с категориями
         keyboard = []
         for category in categories:
-            # Теперь категория содержит 5 значений
-            cat_id, name, description, instruction_id, created_at = category[:5]
+            cat_id, name, description, created_at = category
             keyboard.append([InlineKeyboardButton(f"{name}", callback_data=f"select_category_{cat_id}")])
         
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_add_photo")])
@@ -5552,35 +4737,19 @@ async def handle_category_selection(update: Update, context: CallbackContext):
             
             # Получаем информацию о категории
             category = get_category(category_id)
-            if category:
-                cat_id, name, description, instruction_id, created_at = category[:5]
-                
-                # Получаем название инструкции для этой категории
-                instruction_name = "По умолчанию"
-                if instruction_id:
-                    instruction = get_instruction_by_id(instruction_id)
-                    if instruction:
-                        instruction_name = instruction[1]
-                
-                await query.edit_message_caption(
-                    caption=f"✅ <b>Фото добавлено в категорию!</b>\n\n"
-                           f"📁 Категория: {name}\n"
-                           f"📝 Описание: {description or 'нет'}\n"
-                           f"📚 Инструкция: {instruction_name}",
-                    parse_mode="HTML"
-                )
-            else:
-                await query.edit_message_caption(
-                    caption=f"✅ <b>Фото добавлено!</b>\n\n"
-                           f"📁 Категория ID: {category_id}",
-                    parse_mode="HTML"
-                )
+            cat_id, name, description, created_at = category
+            
+            await query.edit_message_caption(
+                caption=f"✅ <b>Фото добавлено в категорию!</b>\n\n"
+                       f"📁 Категория: {name}\n"
+                       f"📝 Описание: {description or 'нет'}",
+                parse_mode="HTML"
+            )
             
             # Очищаем временные данные
             if 'temp_photo_id' in context.user_data:
                 del context.user_data['temp_photo_id']
         else:
-            await query.answer("❌ Фото не найдено", show_alert=True)
             await query.answer("❌ Фото не найдено", show_alert=True)
         
 async def find_user_command(update: Update, context: CallbackContext):
@@ -6301,8 +5470,16 @@ async def handle_broadcast(update: Update, context: CallbackContext):
     for user in users:
         user_id = user[0]
         try:
-            await context.bot.send_message(user_id, message, parse_mode="HTML")
+            await context.bot.send_message(
+                user_id, 
+                message, 
+                parse_mode="HTML",
+                timeout=30
+            )
             success += 1
+        except telegram.error.TimedOut:
+            logger.warning(f"Таймаут при рассылке пользователю {user_id}")
+            failed += 1
         except Exception as e:
             failed += 1
             logger.error(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
@@ -6385,11 +5562,7 @@ async def handle_cancel_command(update: Update, context: CallbackContext):
         'waiting_for_evening_reminder', 'waiting_for_reset_user_id',
         'waiting_for_broadcast', 'waiting_for_reject_comment',
         'temp_photo_id', 'waiting_for_withdrawal_details',
-        'waiting_for_reject_withdrawal_comment', 'waiting_for_withdrawal_amount',
-        'waiting_for_new_instruction', 'waiting_for_edit_instruction_id',  # Новые состояния
-        'waiting_for_edit_instruction_data', 'waiting_for_delete_instruction',
-        'waiting_for_assign_instruction', 'editing_instruction_id',
-        'editing_instruction_name'
+        'waiting_for_reject_withdrawal_comment', 'waiting_for_withdrawal_amount'
     ]
     
     for state in states_to_clear:
@@ -6665,31 +5838,23 @@ async def show_enhanced_task_interface(update: Update, context: CallbackContext,
     
     # Получаем информацию о категории задания
     category_name = "Без категории"
-    category_id = None
     if photo_id:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT p.category_id, c.name 
+            SELECT c.name 
             FROM photos p 
             LEFT JOIN task_categories c ON p.category_id = c.id 
             WHERE p.id = ?
         ''', (photo_id,))
         category_result = cursor.fetchone()
-        if category_result:
-            category_id = category_result[0]
-            category_name = category_result[1] if category_result[1] else "Без категории"
+        category_name = category_result[0] if category_result else "Без категории"
         conn.close()
-    
-    # ★★★ ВАЖНО: Получаем инструкцию для категории задания ★★★
-    if category_id:
-        instruction = get_instruction_by_category(category_id)  # Используем новую функцию
-    else:
-        instruction = "📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела \"Мои отзывы\""
     
     # ★★★ ИСПРАВЛЕННАЯ ЛОГИКА ОТОБРАЖЕНИЯ ★★★
     if current_step == TASK_STATUS["CONFIRM_CALL"]:
         # Пользователь еще не подтвердил звонок - показываем задание и кнопки управления
+        instruction = get_instruction()
         
         # Проверяем, не прошло ли 3 дня с последнего сброса счетчика замен
         available_replacements = 2
@@ -6764,6 +5929,7 @@ async def show_enhanced_task_interface(update: Update, context: CallbackContext,
                         status_message += f"\n🔄 <b>Следующая замена через:</b> {days_remaining} дней"
                 except:
                     pass
+        
     else:
         # Пользователь уже подтвердил звонок - показываем только статус и кнопки
         status_messages = {
@@ -7632,7 +6798,6 @@ async def handle_button_callback(update: Update, context: CallbackContext):
     else:
         # Если callback не распознан, пробуем обработчик помощи
         await handle_help_button_callback(update, context)
-    print("UNHANDLED CALLBACK:", data)
         
 async def admin_show_withdrawals(update: Update, context: CallbackContext, page=0):
     """Показать список выплат для администратора"""
@@ -7690,7 +6855,7 @@ async def admin_show_withdrawals(update: Update, context: CallbackContext, page=
                 'qiwi': '📱 Qiwi', 
                 'yoomoney': '🧾 ЮMoney',
                 'phone': '☎️ Телефон',
-                'sber': '🏦 Сбербанк (СБП)'
+                'sber': '🏦 Сбербанк'
             }
             method_display = method_names.get(method, method)
             
@@ -7784,7 +6949,7 @@ async def admin_withdrawals_stats(update: Update, context: CallbackContext):
         'qiwi': '📱 Qiwi', 
         'yoomoney': '🧾 ЮMoney',
         'phone': '☎️ Телефон',
-        'sber': '🏦 Сбербанк (СБП)'
+        'sber': '🏦 Сбербанк'
     }
     
     message = "📊 <b>Статистика выплат</b>\n\n"
@@ -7841,7 +7006,7 @@ async def show_withdrawal_history(update: Update, context: CallbackContext):
             'qiwi': '📱 Qiwi', 
             'yoomoney': '🧾 ЮMoney',
             'phone': '☎️ Телефон',
-            'sber': '🏦 Сбербанк (СБП)'
+            'sber': '🏦 Сбербанк'
         }
         
         icon = status_icons.get(status, '❓')
@@ -8168,26 +7333,6 @@ async def handle_message(update: Update, context: CallbackContext):
     if context.user_data.get('waiting_for_assign_category'):
         await handle_assign_category_input(update, context)
         return
-        
-    if context.user_data.get('waiting_for_new_instruction'):
-        await handle_instruction_input(update, context)
-        return
-        
-    if context.user_data.get('waiting_for_edit_instruction_id'):
-        await handle_edit_instruction_id_input(update, context)
-        return
-        
-    if context.user_data.get('waiting_for_edit_instruction_data'):
-        await handle_edit_instruction_data_input(update, context)
-        return
-        
-    if context.user_data.get('waiting_for_delete_instruction'):
-        await handle_delete_instruction_input(update, context)
-        return
-        
-    if context.user_data.get('waiting_for_assign_instruction'):
-        await handle_assign_instruction_input(update, context)
-        return
     
     if text == "Меню" or text == "🔙 Главное меню":
         await show_main_menu(update, context)
@@ -8233,19 +7378,6 @@ async def handle_message(update: Update, context: CallbackContext):
         await category_stats_handler(update, context)      
     elif text == "🖼️ Назначить категорию фото" and update.effective_user.id == ADMIN_ID:
         await assign_category_to_photo_handler(update, context)
-        
-    elif text == "📚 Управление инструкциями" and update.effective_user.id == ADMIN_ID:
-        await manage_instructions(update, context)
-    elif text == "📚 Назначить инструкцию категории" and update.effective_user.id == ADMIN_ID:
-        await assign_instruction_to_category_handler(update, context)
-    elif text == "➕ Добавить инструкцию" and update.effective_user.id == ADMIN_ID:
-        await add_instruction_handler(update, context)
-    elif text == "✏️ Редактировать инструкцию" and update.effective_user.id == ADMIN_ID:
-        await edit_instruction_handler(update, context)
-    elif text == "🗑️ Удалить инструкцию" and update.effective_user.id == ADMIN_ID:
-        await delete_instruction_handler(update, context)
-    elif text == "📊 Статистика инструкций" and update.effective_user.id == ADMIN_ID:
-        await instruction_stats_handler(update, context)
      
     elif text == "🔙 Назад в редактор" and update.effective_user.id == ADMIN_ID:
         await editor_panel(update, context)
@@ -8305,28 +7437,12 @@ async def handle_message(update: Update, context: CallbackContext):
             )
             return
         
-        photo_id, photo_file_id, assigned_at, called, called_confirmed, screenshot_sent, current_step, accounts_requested, photos_sent = task_info
-        
-        # Получаем категорию задания
-        category_id = None
-        if photo_id:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT category_id FROM photos WHERE id = ?", (photo_id,))
-            result = cursor.fetchone()
-            if result:
-                category_id = result[0]
-            conn.close()
-        
-        # Получаем инструкцию для категории
-        if category_id:
-            instruction = get_instruction_by_category(category_id)  # Используем новую функцию
-        else:
-            instruction = "📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела \"Мои отзывы\""
-            
         # ★★★ ИСПРАВЛЕННАЯ ЛОГИКА ★★★
         # Если пользователь еще не подтвердил звонок - показываем задание полностью
         if user_step == TASK_STATUS["CONFIRM_CALL"]:
+            photo_id, photo_file_id, assigned_at, called, called_confirmed, screenshot_sent, current_step, accounts_requested, photos_sent = task_info
+            instruction = get_instruction()
+            
             # ★★★ ДОБАВЛЯЕМ КНОПКУ ЗАМЕНЫ В КЛАВИАТУРУ ★★★
             replacement_count = get_replacement_count(user_id)
             
@@ -8349,7 +7465,7 @@ async def handle_message(update: Update, context: CallbackContext):
                     caption=f"📝 <b>Ваше задание:</b>\n\n{instruction}\n\n"
                            f"✅ <b>После выполнения нажмите 'Готово'</b>",
                     parse_mode="HTML",
-                    reply_markup=reply_markup
+                    reply_markup=reply_markup  # ★★★ КЛАВИАТУРА ПРИКРЕПЛЯЕТСЯ СРАЗУ К ФОТО ★★★
                 )
             except Exception as e:
                 logger.error(f"Ошибка при отправке фото: {e}")
@@ -8489,23 +7605,34 @@ async def handle_message(update: Update, context: CallbackContext):
             return
         
         photo_id, photo_file_id, assigned_at, called, called_confirmed, screenshot_sent, current_step, accounts_requested, photos_sent = task_info
+        instruction = get_instruction()
         
-        # Получаем категорию задания
-        category_id = None
-        if photo_id:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT category_id FROM photos WHERE id = ?", (photo_id,))
-            result = cursor.fetchone()
-            if result:
-                category_id = result[0]
-            conn.close()
+        try:
+            await update.message.reply_photo(
+                photo=photo_file_id,
+                caption=f"📝 <b>Ваше задание:</b>\n\n{instruction}",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото: {e}")
+            await safe_reply(update, context, 
+                f"📝 <b>Ваше задание:</b>\n\n{instruction}",
+                parse_mode="HTML"
+            )
+
+    elif text == "📋 Показать задание":
+        user_id = update.effective_user.id
+        task_info = get_user_task(user_id)
         
-        # Получаем инструкцию для категории
-        if category_id:
-            instruction = get_instruction_by_category(category_id)  # Используем новую функцию
-        else:
-            instruction = "📝 <b>Инструкция по выполнению задания:</b>\n\n1. Позвоните по указанному номеру\n2. Подтвердите выполнение задания\n3. На следующий день оставьте отзыв\n4. Пришлите скриншот раздела \"Мои отзывы\""
+        if not task_info:
+            await safe_reply(update, context, 
+                "❌ <b>У вас нет активного задания.</b>",
+                parse_mode="HTML"
+            )
+            return
+        
+        photo_id, photo_file_id, assigned_at, called, called_confirmed, screenshot_sent, current_step, accounts_requested, photos_sent = task_info
+        instruction = get_instruction()
         
         try:
             await update.message.reply_photo(
@@ -8545,7 +7672,7 @@ async def handle_message(update: Update, context: CallbackContext):
         await show_withdrawal_history(update, context)
     elif text == "💳 Мои реквизиты":
         await show_my_payment_methods(update, context)
-    elif text in ["💳 Банковская карта", "📱 Qiwi", "🧾 ЮMoney", "☎️ Баланс телефона", "🏦 Сбербанк Онлайн (СБП)"]:
+    elif text in ["💳 Банковская карта", "📱 Qiwi", "🧾 ЮMoney", "☎️ Баланс телефона", "🏦 Сбербанк Онлайн"]:
         await handle_withdrawal_method(update, context)
     elif text == "🔙 Назад к выбору метода":
         await show_withdrawal_menu(update, context)
